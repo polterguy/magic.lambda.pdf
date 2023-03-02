@@ -6,6 +6,7 @@ using System.IO;
 using System.Text;
 using iText.Kernel.Pdf;
 using magic.node;
+using magic.node.contracts;
 using magic.node.extensions;
 using magic.signals.contracts;
 
@@ -18,6 +19,12 @@ namespace magic.lambda.pdf
     public class Pdf2Text : ISlot
     {
         private static int _numberOfCharsToKeep = 15;
+        readonly IRootResolver _rootResolver;
+
+        public Pdf2Text(IRootResolver rootResolver)
+        {
+            _rootResolver = rootResolver;
+        }
 
         /// <summary>
         /// Implementation of your slot.
@@ -26,47 +33,48 @@ namespace magic.lambda.pdf
         /// <param name="input">Arguments to your slot.</param>
         public void Signal(ISignaler signaler, Node input)
         {
-            input.Value = ExtractText(input.GetEx<byte[]>());
+            input.Value = ExtractText(_rootResolver.AbsolutePath(input.GetEx<string>()));
         }
 
         #region [ -- Private helper methods -- ]
 
-        string ExtractText(byte[] bytes)
+        string ExtractText(string filename)
         {
             var builder = new StringBuilder();
-            using (var memStream = new MemoryStream())
+            using (var inputFile = File.OpenRead(filename))
             {
-                memStream.Write(bytes);
-                memStream.Position = 0;
-                var reader = new PdfReader(memStream);
-                var doc = new PdfDocument(reader);
-
-                int totalLen = 68;
-                float charUnit = ((float)totalLen) / (float)doc.GetNumberOfPages();
-                int totalWritten = 0;
-                float curUnit = 0;
-
-                for (int page = 1; page <= doc.GetNumberOfPages(); page++)
+                using (var reader = new PdfReader(inputFile))
                 {
-                    builder.Append(ExtractTextFromPDFBytes(doc.GetPage(page).GetContentBytes()) + " ");
+                    using (var doc = new PdfDocument(reader))
+                    {
+                        int totalLen = 68;
+                        float charUnit = ((float)totalLen) / (float)doc.GetNumberOfPages();
+                        int totalWritten = 0;
+                        float curUnit = 0;
 
-                    if (charUnit >= 1.0f)
-                    {
-                        for (int i = 0; i < (int)charUnit; i++)
+                        for (int page = 1; page <= doc.GetNumberOfPages(); page++)
                         {
-                            totalWritten++;
-                        }
-                    }
-                    else
-                    {
-                        curUnit += charUnit;
-                        if (curUnit >= 1.0f)
-                        {
-                            for (int i = 0; i < (int)curUnit; i++)
+                            builder.Append(ExtractTextFromPDFBytes(doc.GetPage(page).GetContentBytes()) + "\r\n\r\n");
+
+                            if (charUnit >= 1.0f)
                             {
-                                totalWritten++;
+                                for (int i = 0; i < (int)charUnit; i++)
+                                {
+                                    totalWritten++;
+                                }
                             }
-                            curUnit = 0;
+                            else
+                            {
+                                curUnit += charUnit;
+                                if (curUnit >= 1.0f)
+                                {
+                                    for (int i = 0; i < (int)curUnit; i++)
+                                    {
+                                        totalWritten++;
+                                    }
+                                    curUnit = 0;
+                                }
+                            }
                         }
                     }
                 }
@@ -80,7 +88,7 @@ namespace magic.lambda.pdf
             foreach (string token in tokens)
             {
                 if ((recent[_numberOfCharsToKeep - 3] == token[0]) &&
-                    (recent[_numberOfCharsToKeep - 2] == token[1]) &&
+                    (token.Length == 2 && recent[_numberOfCharsToKeep - 2] == token[1]) &&
                     ((recent[_numberOfCharsToKeep - 1] == ' ') ||
                     (recent[_numberOfCharsToKeep - 1] == 0x0d) ||
                     (recent[_numberOfCharsToKeep - 1] == 0x0a)) &&
@@ -97,11 +105,11 @@ namespace magic.lambda.pdf
             if (input == null || input.Length == 0)
                 return "";
 
-            string resultString = "";
-            bool inTextObject = false;
-            bool nextLiteral = false;
-            int bracketDepth = 0;
-            char[] previousCharacters = new char[_numberOfCharsToKeep];
+            var result = new StringBuilder();
+            var inTextObject = false;
+            var nextLiteral = false;
+            var bracketDepth = 0;
+            var previousCharacters = new char[_numberOfCharsToKeep];
             for (int j = 0; j < _numberOfCharsToKeep; j++)
             {
                 previousCharacters[j] = ' ';
@@ -116,29 +124,22 @@ namespace magic.lambda.pdf
                     {
                         if (CheckToken(new string[] { "TD", "Td" }, previousCharacters))
                         {
-                        resultString += "\n\r";
+                            result.Append("\r\n");
                         }
-                        else
+                        else if (CheckToken(new string[] { "'", "T*", "\"" }, previousCharacters))
                         {
-                            if (CheckToken(new string[] { "'", "T*", "\"" }, previousCharacters))
-                            {
-                                resultString += "\n";
-                            }
-                            else
-                            {
-                                if (CheckToken(new string[] { "Tj" }, previousCharacters))
-                                {
-                                    resultString += " ";
-                                }
-                            }
+                            result.Append("\r\n");
+                        }
+                        else if (CheckToken(new string[] { "Tj" }, previousCharacters))
+                        {
+                            result.Append(" ");
                         }
                     }
 
-                    // End of a text object, also go to a new line.
                     if (bracketDepth == 0 && CheckToken(new string[] { "ET" }, previousCharacters))
                     {
                         inTextObject = false;
-                        resultString += " ";
+                        result.Append("\r\n");
                     }
                     else
                     {
@@ -154,24 +155,18 @@ namespace magic.lambda.pdf
                             {
                                 bracketDepth = 0;
                             }
-                            else
+                            else if (bracketDepth == 1)
                             {
-                                // Just a normal text character:
-                                if (bracketDepth == 1)
+                                if (c == '\\' && !nextLiteral)
                                 {
-                                    // Only print out next character no matter what. 
-                                    // Do not interpret.
-                                    if (c == '\\' && !nextLiteral)
-                                    {
-                                        nextLiteral = true;
-                                    }
-                                    else
-                                    {
-                                        if (((c >= ' ') && (c <= '~')) ||
-                                            ((c >= 128) && (c < 255)))
-                                            resultString += c.ToString();
-                                        nextLiteral = false;
-                                    }
+                                    nextLiteral = true;
+                                }
+                                else
+                                {
+                                    if (((c >= ' ') && (c <= '~')) ||
+                                        ((c >= 128) && (c < 255)))
+                                        result.Append(c.ToString());
+                                    nextLiteral = false;
                                 }
                             }
                         }
@@ -187,7 +182,7 @@ namespace magic.lambda.pdf
                 if (!inTextObject && CheckToken(new string[] { "BT" }, previousCharacters))
                     inTextObject = true;
             }
-            return resultString;
+            return result.ToString();
         }
 
         #endregion
