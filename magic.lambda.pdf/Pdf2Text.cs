@@ -23,6 +23,10 @@ namespace magic.lambda.pdf
     {
         readonly IRootResolver _rootResolver;
 
+        /// <summary>
+        /// Creates an instance of your type
+        /// </summary>
+        /// <param name="rootResolver">Needed to resolve root folder of cloudlet</param>
         public Pdf2Text(IRootResolver rootResolver)
         {
             _rootResolver = rootResolver;
@@ -35,37 +39,60 @@ namespace magic.lambda.pdf
         /// <param name="input">Arguments to your slot.</param>
         public void Signal(ISignaler signaler, Node input)
         {
-            input.Value = ExtractText(_rootResolver.AbsolutePath(input.GetEx<string>()));
+            var value = input.GetEx<object>();
+            if (value is string filename)
+                input.Value = ExtractFromFile(_rootResolver.AbsolutePath(filename));
+            else if (value is Stream stream)
+                input.Value = ExtractFromStream(stream);
         }
 
         #region [ -- Private helper methods -- ]
 
-        string ExtractText(string filename)
+        /*
+         * Reads PDF file from the specified (absolute) filename.
+         */
+        string ExtractFromFile(string filename)
         {
-            using (PdfReader reader = new PdfReader(filename))
+            using (var reader = new PdfReader(filename))
             {
-                var builder = new StringBuilder();
-
-                using (var doc = new PdfDocument(reader))
-                {
-                    for (int idx = 1; idx <= doc.GetNumberOfPages(); idx++)
-                    {
-                        var content = PdfTextExtractor.GetTextFromPage(doc.GetPage(idx));
-                        string[] lines = content.Split('\n');
-                        foreach (var idxLine in lines)
-                        {
-                            builder.Append(idxLine.Trim()).Append("\r\n");
-                        }
-                        if (lines.Length > 0)
-                            builder.Append("\r\n");
-                    }
-                }
-                return builder.ToString().Trim();
+                return Extract(reader);
             }
         }
 
+        /*
+         * Reads PDF file from the specified stream.
+         */
+        string ExtractFromStream(Stream stream)
+        {
+            using (var reader = new PdfReader(stream))
+            {
+                return Extract(reader);
+            }
+        }
+
+        /*
+         * Extracts all text from the specified PdfReader.
+         */
+        string Extract(PdfReader reader)
+        {
+            var builder = new StringBuilder();
+            using (var doc = new PdfDocument(reader))
+            {
+                for (var idx = 1; idx <= doc.GetNumberOfPages(); idx++)
+                {
+                    var content = PdfTextExtractor.GetTextFromPage(doc.GetPage(idx));
+                    var lines = content.Split('\n');
+                    foreach (var idxLine in lines)
+                    {
+                        builder.Append(idxLine.Trim()).Append("\r\n");
+                    }
+                    if (lines.Length > 0)
+                        builder.Append("\r\n");
+                }
+            }
+            return builder.ToString().Trim();
+        }
 
         #endregion
-
     }
 }
