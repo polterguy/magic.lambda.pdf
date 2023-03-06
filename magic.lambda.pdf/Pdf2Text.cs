@@ -16,7 +16,7 @@ using magic.signals.contracts;
 namespace magic.lambda.pdf
 {
     /// <summary>
-    /// [pdf2text] slot for retrieving a configuration key.
+    /// [pdf2text] slot for retrieving text content from a PDF file or stream.
     /// </summary>
     [Slot(Name = "pdf2text")]
     public class Pdf2Text : ISlot
@@ -44,6 +44,8 @@ namespace magic.lambda.pdf
                 input.Value = ExtractFromFile(_rootResolver.AbsolutePath(filename));
             else if (value is Stream stream)
                 input.Value = ExtractFromStream(stream);
+            else if (value is byte[] bytes)
+                input.Value = ExtractFromBytes(bytes);
         }
 
         #region [ -- Private helper methods -- ]
@@ -67,6 +69,20 @@ namespace magic.lambda.pdf
             using (var reader = new PdfReader(stream))
             {
                 return Extract(reader);
+            }
+        }
+
+        /*
+         * Reads PDF file from the specified bytes.
+         */
+        string ExtractFromBytes(byte[] bytes)
+        {
+            using (var stream = new MemoryStream(bytes))
+            {
+                using (var reader = new PdfReader(stream))
+                {
+                    return Extract(reader);
+                }
             }
         }
 
